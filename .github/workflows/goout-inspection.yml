@@ -1,0 +1,178 @@
+name: 深圳亲子活动日历 - 数据质量巡检
+
+on:
+  schedule:
+    - cron: '0 0 * * *'
+  workflow_dispatch:
+    inputs:
+      reason:
+        description: '触发原因'
+        required: false
+        default: '手动触发'
+  push:
+    branches:
+      - main
+    paths:
+      - 'inspector.py'
+      - '.github/workflows/goout-inspection.yml'
+
+permissions:
+  contents: write
+  actions: read
+
+jobs:
+  inspection:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: 设置Python环境
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: 安装依赖
+        run: |
+          python -m pip install --upgrade pip
+          pip install requests 2>/dev/null || true
+
+      - name: 运行巡检
+        id: inspection
+        run: |
+          python inspector.py
+          echo "report_file=$(ls -t reports/inspection-*.md | head -1)" >> $GITHUB_OUTPUT
+          echo "report_filename=$(ls -t reports/inspection-*.md | head -1 | xargs basename)" >> $GITHUB_OUTPUT
+
+      - name: 上传巡检报告
+        uses: actions/upload-artifact@v4
+        with:
+          name: inspection-report
+          path: reports/latest.md
+          retention-days: 30
+
+      - name: 提交历史数据更新
+        if: github.event_name != 'pull_request'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add data/ reports/
+          git diff --staged --quiet || git commit -m "chore: 更新巡检数据与报告 [skip ci]"
+          git push
+
+      - name: 创建巡检 Issue 到 goout 仓库
+        env:
+          GOOUT_PAT: ${{ secrets.GOOUT_PAT }}
+        run: |
+          python3 << 'PYEOF'
+          import json, os, urllib.request
+          from datetime import datetime
+
+          TOKEN = os.environ["GOOUT_PAT"]
+          HEADERS = {
+              "Authorization": f"Bearer {TOKEN}",
+              "Accept": "application/vnd.github.v3+json",
+              "Content-Type": "application/json"
+          }
+          GOOUT_REPO = "islon/goout"
+          PAGE_URL = "https://islon.github.io/goout/schedule.html"
+          DATA_URL = "https://raw.githubusercontent.com/islon/goout/main/output/exhibitions.json"
+          INSPECTOR_REPO = "islon/for-goout-inspector"
+          TODAY = datetime.now().strftime("%Y-%m-%d")
+
+          def api(method, path, data=None):
+              url = f"https://api.github.com{path}"
+              body = json.dumps(data).encode() if data else None
+              req = urllib.request.Request(url, data=body, headers=HEADERS, method=method)
+              try:
+                  with urllib.request.urlopen(req) as resp:
+                      return json.loads(resp.read())
+              except urllib.error.HTTPError as e:
+                  print(f"API Error {e.code}: {e.read().decode()[:300]}")
+                  return None
+
+          with open("reports/latest.md", "r") as f:
+              report = f.read()
+
+          lines = report.split("\n")
+          stats = {}
+          for line in lines:
+              if "全量活动数据" in line: stats["total"] = line.split("|")[2].strip().split()[0]
+              if "新增活动" in line: stats["new"] = line.split("|")[2].strip().split()[0]
+              if "问题总数" in line: stats["issues"] = line.split("|")[2].strip().split()[0]
+              if "严重错误" in line: stats["critical"] = line.split("|")[2].strip().split()[0]
+              if "一般问题" in line: stats["warnings"] = line.split("|")[2].strip().split()[0]
+              if "优化建议" in line: stats["suggestions"] = line.split("|")[2].strip().split()[0]
+
+          summary = f"""## 巡检摘要 ({TODAY})
+
+| 指标 | 数值 |
+|------|------|
+| 活动总数 | {stats.get('total', '?')} |
+| 新增活动 | {stats.get('new', '?')} |
+| 问题总数 | {stats.get('issues', '?')} |
+| 严重错误 | {stats.get('critical', '?')} |
+| 一般问题 | {stats.get('warnings', '?')} |
+| 优化建议 | {stats.get('suggestions', '?')} |
+
+### 站点状态
+- 页面: [{PAGE_URL}]({PAGE_URL})
+- 数据源: [{DATA_URL}]({DATA_URL})
+- 完整报告: [{INSPECTOR_REPO}/blob/main/reports/latest.md](https://github.com/{INSPECTOR_REPO}/blob/main/reports/latest.md)
+
+---
+
+"""
+
+          in_warnings = False
+          warn_lines = []
+          for line in lines:
+              if "## 三、一般问题" in line:
+                  in_warnings = True
+                  continue
+              if in_warnings:
+                  if line.startswith("## 四、") or line.startswith("## 五、"):
+                      break
+                  warn_lines.append(line)
+
+          if warn_lines:
+              summary += "### 一般问题\n\n"
+              summary += "\n".join(warn_lines[:60])
+              if len(warn_lines) > 60:
+                  summary += "\n\n> ... 更多问题详见完整报告。\n"
+
+          summary += f"""
+---
+> 本 Issue 由 [数据质量巡检智能体](https://github.com/{INSPECTOR_REPO}) 每日自动生成
+> 报告时间: {TODAY}
+"""
+
+          existing = api("GET", f"/repos/{GOOUT_REPO}/issues?labels=data-quality&state=open&per_page=10")
+          today_issue = None
+          if existing:
+              for iss in existing:
+                  if f"巡检报告 ({TODAY}" in iss.get("title", ""):
+                      today_issue = iss
+                      break
+
+          if today_issue:
+              print(f"Updating existing issue #{today_issue['number']}")
+              api("PATCH", f"/repos/{GOOUT_REPO}/issues/{today_issue['number']}", {"body": summary})
+          else:
+              result = api("POST", f"/repos/{GOOUT_REPO}/issues", {
+                  "title": f"[巡检报告] {TODAY} 深圳亲子活动日历数据质量巡检",
+                  "body": summary,
+                  "labels": ["data-quality", "automated"]
+              })
+              if result:
+                  print(f"Issue created: {result['html_url']}")
+          PYEOF
+
+      - name: 巡检摘要
+        run: |
+          echo "### 巡检完成" >> $GITHUB_STEP_SUMMARY
+          echo "报告文件: $(ls -t reports/inspection-*.md | head -1)" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          head -80 reports/latest.md >> $GITHUB_STEP_SUMMARY
