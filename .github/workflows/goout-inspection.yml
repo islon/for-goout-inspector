@@ -15,6 +15,7 @@ on:
     paths:
       - 'inspector.py'
       - 'sync_issue.py'
+      - 'discover_events.py'
       - '.github/workflows/goout-inspection.yml'
 
 permissions:
@@ -67,6 +68,11 @@ jobs:
         env:
           GOOUT_PAT: ${{ secrets.GOOUT_PAT }}
         run: python3 sync_issue.py
+
+      - name: 新活动发现扫描
+        env:
+          GOOUT_PAT: ${{ secrets.GOOUT_PAT }}
+        run: python3 discover_events.py
 
       - name: 巡检摘要
         run: |
