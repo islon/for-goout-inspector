@@ -32,12 +32,16 @@ with open("reports/latest.md", "r") as f:
 lines = report.split("\n")
 stats = {}
 for line in lines:
-    if "全量活动数据" in line: stats["total"] = line.split("|")[2].strip().split()[0]
-    if "新增活动" in line: stats["new"] = line.split("|")[2].strip().split()[0]
-    if "问题总数" in line: stats["issues"] = line.split("|")[2].strip().split()[0]
-    if "严重错误" in line: stats["critical"] = line.split("|")[2].strip().split()[0]
-    if "一般问题" in line: stats["warnings"] = line.split("|")[2].strip().split()[0]
-    if "优化建议" in line: stats["suggestions"] = line.split("|")[2].strip().split()[0]
+    parts = line.split("|")
+    if len(parts) < 3:
+        continue
+    val = parts[2].strip()
+    if "全量活动数据" in line: stats["total"] = val
+    if "新增活动" in line: stats["new"] = val
+    if "问题总数" in line: stats["issues"] = val
+    if "严重错误" in line: stats["critical"] = val
+    if "一般问题" in line: stats["warnings"] = val
+    if "优化建议" in line: stats["suggestions"] = val
 
 summary = f"""## 巡检摘要 ({TODAY})
 
