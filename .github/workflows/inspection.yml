@@ -1,0 +1,93 @@
+name: 深圳亲子活动日历 - 数据质量巡检
+
+on:
+  schedule:
+    # 每天北京时间 08:00 (UTC 0:00)
+    - cron: '0 0 * * *'
+  workflow_dispatch:
+    inputs:
+      create_issue:
+        description: '是否创建GitHub Issue报告'
+        type: boolean
+        default: false
+  push:
+    branches:
+      - main
+    paths:
+      - 'inspector.py'
+      - '.github/workflows/inspection.yml'
+
+permissions:
+  contents: write
+  issues: write
+  actions: read
+
+jobs:
+  inspection:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: 设置Python环境
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: 安装依赖
+        run: |
+          python -m pip install --upgrade pip
+          pip install requests 2>/dev/null || true
+
+      - name: 运行巡检
+        id: inspection
+        run: |
+          python inspector.py
+          echo "report_file=$(ls -t reports/inspection-*.md | head -1)" >> $GITHUB_OUTPUT
+          echo "report_filename=$(ls -t reports/inspection-*.md | head -1 | xargs basename)" >> $GITHUB_OUTPUT
+
+      - name: 上传巡检报告
+        uses: actions/upload-artifact@v4
+        with:
+          name: inspection-report
+          path: reports/latest.md
+          retention-days: 30
+
+      - name: 提交历史数据更新
+        if: github.event_name != 'pull_request'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add data/ reports/
+          git diff --staged --quiet || git commit -m "chore: 更新巡检数据与报告 [skip ci]"
+          git push
+
+      - name: 创建 Issue（手动触发）
+        if: github.event_name == 'workflow_dispatch' && inputs.create_issue
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const report = fs.readFileSync('reports/latest.md', 'utf8');
+
+            // 提取报告摘要（前2000字）
+            const summary = report.substring(0, 2000);
+
+            const issue = await github.rest.issues.create({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              title: `[巡检报告] ${new Date().toISOString().slice(0, 10)} 深圳亲子活动日历数据质量巡检`,
+              body: `## 巡检报告摘要\n\n${summary}\n\n---\n\n完整报告请查看 [latest.md](https://github.com/${context.repo.owner}/${context.repo.repo}/blob/main/reports/latest.md)`,
+              labels: ['inspection', 'automated']
+            });
+
+            console.log(`Issue created: ${issue.data.html_url}`);
+
+      - name: 巡检摘要
+        run: |
+          echo "### 巡检完成" >> $GITHUB_STEP_SUMMARY
+          echo "报告文件: $(ls -t reports/inspection-*.md | head -1)" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          head -80 reports/latest.md >> $GITHUB_STEP_SUMMARY
