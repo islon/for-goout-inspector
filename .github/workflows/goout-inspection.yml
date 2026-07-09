@@ -14,6 +14,7 @@ on:
       - main
     paths:
       - 'inspector.py'
+      - 'sync_issue.py'
       - '.github/workflows/goout-inspection.yml'
 
 permissions:
